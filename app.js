@@ -1,6 +1,6 @@
 (function(){
 "use strict";
-var APP_VERSION = "1";
+var APP_VERSION = "2";
 /* Same backend and same saved passcode and name as the recipe app. */
 var API = "https://script.google.com/macros/s/AKfycbyCJiO1v_3d9OV8CSvS589vksbBhpK7HgRU8xpBzXIptD8kO33NE2Ly3hCxxu2wwJ35/exec";
 var K = {pass:"recipebox:pass", who:"recipebox:who", cache:"freezer:cache", queue:"freezer:queue"};
@@ -17,6 +17,8 @@ var pending = readJSON(K.queue, {});   /* taps not sent yet: {itemId: delta} */
 var inflight = {};                     /* taps being sent right now */
 var view = "list", filter = "All", query = "", showOut = false, actWho = "Everyone";
 var keepVisible = {};                  /* items you just tapped stay put until you leave the view */
+var stickyOut = {};                    /* items brought back from Out of stock stay in that section until you leave */
+function resetSticky(){ keepVisible={}; stickyOut={}; }
 var sheet = null;                      /* {type:"item", id, editing} or {type:"add", ...} */
 var sendTimer = null, retryTimer = null;
 
@@ -143,12 +145,13 @@ function send(){
 }
 
 /* ---------- tapping + and - ---------- */
-function tap(id, d, quiet){
+function tap(id, d, quiet, fromOut){
   var it=byId(id); if(!it) return;
   if(d<0 && count(it)===0) return;
   pending[id]=(pending[id]||0)+d; if(!pending[id]) delete pending[id];
-  keepVisible[id]=true; saveQueue(); render(); scheduleSend();
-  if(!quiet) toast((d>0?"Added 1 ":"Took out 1 ")+lower(it.name)+", "+(count(it)?count(it)+" left":"none left"), function(){ tap(id,-d,true); hideToast(); });
+  if(fromOut) stickyOut[id]=true; else if(!stickyOut[id]) keepVisible[id]=true;
+  saveQueue(); render(); scheduleSend();
+  if(!quiet) toast((d>0?"Added 1 ":"Took out 1 ")+lower(it.name)+", "+(count(it)?count(it)+" left":"none left"), function(){ tap(id,-d,true,fromOut); hideToast(); });
 }
 
 /* ---------- page ---------- */
@@ -191,17 +194,14 @@ function render(){
 
 function itemRow(it, inOut){
   var c=count(it), e=lastEntry(it.id), meta=[];
+  if(inOut) meta.push(it.group);
   if(it.staple) meta.push("Staple");
   if(e) meta.push(e.who==="Starting list" ? "Starting count, "+shortDay(e.at) : name(e.who)+(e.kind==="add"?" added ":" took out ")+Math.abs(e.change)+", "+shortDay(e.at));
-  var metaTxt=meta.join(" · ");
-  if(inOut){
-    return '<div class="row out"><button class="rmain" data-open="'+esc(it.id)+'"><span class="rname">'+esc(it.name)+'</span><span class="rmeta">'+esc(it.group+(metaTxt?" · "+metaTxt:""))+'</span></button>'+
-      '<button class="sbtn ghostplus" data-tap="'+esc(it.id)+'" data-d="1" aria-label="Add one '+esc(it.name)+'">+</button></div>';
-  }
+  var metaTxt=meta.join(" · "), o=inOut?' data-out="1"':'';
   return '<div class="row'+(c===0?' out':'')+'"><button class="rmain" data-open="'+esc(it.id)+'"><span class="rname">'+esc(it.name)+'</span>'+(metaTxt?'<span class="rmeta">'+esc(metaTxt)+'</span>':'')+'</button>'+
-    '<div class="step"><button class="sbtn" data-tap="'+esc(it.id)+'" data-d="-1" aria-label="Take one '+esc(it.name)+' out"'+(c===0?' disabled':'')+'>−</button>'+
+    '<div class="step"><button class="sbtn" data-tap="'+esc(it.id)+'" data-d="-1"'+o+' aria-label="Take one '+esc(it.name)+' out"'+(c===0?' disabled':'')+'>−</button>'+
     '<span class="cnt'+(c===0?' out':'')+'">'+(c===0?'Out':c)+'</span>'+
-    '<button class="sbtn plus" data-tap="'+esc(it.id)+'" data-d="1" aria-label="Add one '+esc(it.name)+'">+</button></div></div>';
+    '<button class="sbtn plus" data-tap="'+esc(it.id)+'" data-d="1"'+o+' aria-label="Add one '+esc(it.name)+'">+</button></div></div>';
 }
 
 function renderList(){
@@ -215,14 +215,16 @@ function renderList(){
   gs.forEach(function(g){
     if(filter!=="All" && g!==filter) return;
     var list=items.filter(function(x){ return x.group===g && match(x); }).sort(function(a,b){ return a.name.localeCompare(b.name); });
-    var vis=list.filter(shown);
-    list.forEach(function(x){ if(!shown(x)) outs.push(x); });
+    var inOut=function(x){ return !searching && (stickyOut[x.id] || !shown(x)); };
+    var vis=list.filter(function(x){ return !inOut(x); });
+    list.forEach(function(x){ if(inOut(x)) outs.push(x); });
     if(!vis.length) return;
     var packs=list.reduce(function(s,x){ return s+count(x); },0);
     html+='<section class="group"><div class="ghead"><h2>'+esc(g)+'</h2><span>'+packs+' pack'+(packs===1?'':'s')+'</span></div><div class="card">'+vis.map(function(x){ return itemRow(x,false); }).join("")+'</div></section>';
   });
   if(outs.length){
-    html+='<button class="outtoggle" data-act="toggleout" aria-expanded="'+showOut+'"><span>'+outs.length+' other item'+(outs.length===1?' is':'s are')+' out</span><span>'+(showOut?'Hide':'Show')+'</span></button>';
+    var zeros=outs.filter(function(x){ return count(x)===0; }).length;
+    html+='<button class="outtoggle" data-act="toggleout" aria-expanded="'+showOut+'"><span>Out of stock'+(zeros?' ('+zeros+')':'')+'</span><span>'+(showOut?'Hide':'Show')+'</span></button>';
     if(showOut) html+='<div class="card outcard">'+outs.sort(function(a,b){ return a.name.localeCompare(b.name); }).map(function(x){ return itemRow(x,true); }).join("")+'</div>';
   }
   if(!html){
@@ -474,11 +476,11 @@ function unlock(){
 document.addEventListener("click", function(e){
   var b=e.target.closest("button"); if(!b) return;
   var d=b.dataset;
-  if(d.tap){ tap(d.tap, +d.d); return; }
+  if(d.tap){ tap(d.tap, +d.d, false, d.out==="1"); return; }
   if(d.open){ openSheet({type:"item", id:d.open}); return; }
-  if(d.filter){ filter=d.filter; keepVisible={}; render(); window.scrollTo(0,0); return; }
+  if(d.filter){ filter=d.filter; resetSticky(); render(); window.scrollTo(0,0); return; }
   if(d.who){ actWho=d.who; render(); return; }
-  if(d.view){ if(view!==d.view){ view=d.view; keepVisible={}; render(); window.scrollTo(0,0); } return; }
+  if(d.view){ if(view!==d.view){ view=d.view; resetSticky(); render(); window.scrollTo(0,0); } return; }
   if(d.useitem){ sheet={type:"item", id:d.useitem}; $("#sheet").scrollTop=0; renderSheet(); return; }
   if(d.group){
     sheet.group=d.group; var ng=$("#edNewGroup")||$("#addNewGroup"); if(ng){ ng.hidden=true; ng.value=""; } sheet.newGroup=false; sheet.newGroupText="";
@@ -508,7 +510,7 @@ document.addEventListener("click", function(e){
   }
 });
 document.addEventListener("input", function(e){
-  if(e.target.id==="q"){ query=e.target.value; keepVisible={}; renderList(); return; }
+  if(e.target.id==="q"){ query=e.target.value; resetSticky(); renderList(); return; }
   if(e.target.id==="addName"){ renderAddMatches(); return; }
   if(e.target.id==="addNewGroup"){ sheet.newGroupText=e.target.value; return; }
 });
@@ -527,7 +529,7 @@ if(!pass) showGate(); else { refresh(true); if(Object.keys(pending).length) send
 window.addEventListener("online", function(){ refresh(true); send(); renderSync(); });
 window.addEventListener("offline", renderSync);
 document.addEventListener("visibilitychange", function(){
-  if(document.visibilityState==="visible"){ keepVisible={}; render(); refresh(false); send(); }
+  if(document.visibilityState==="visible"){ resetSticky(); render(); refresh(false); send(); }
   else if(Object.keys(pending).length){ clearTimeout(sendTimer); send(); }   /* save right away when you leave the app */
 });
 setInterval(renderSync, 60000);

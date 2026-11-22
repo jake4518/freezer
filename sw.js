@@ -1,5 +1,5 @@
 // Bump VERSION whenever the freezer app files change so phones pick up the new version.
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL_CACHE = "fz-shell-" + VERSION;
 const FONT_CACHE = "fz-fonts";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "icon-maskable.png"];
